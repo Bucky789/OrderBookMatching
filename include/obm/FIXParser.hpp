@@ -29,6 +29,9 @@ struct FIXMessage {
     char     orig_cl_ord_id[24]; // tag 41
     int64_t  order_id;           // tag 37
 
+    // Session-level (35=1 TestRequest)
+    char     test_req_id[24];    // tag 112
+
     bool        valid;
     const char* error_msg;
 };

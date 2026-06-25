@@ -17,7 +17,8 @@ static void print_usage(const char* prog) {
               << "  --seed N        RNG seed (default: 42)\n"
               << "  --csv PATH      Replay from CSV file instead of synthetic sim\n"
               << "  --top N         Print top N book levels after each 10k events\n"
-              << "  --bench         Print latency histogram at end\n";
+              << "  --bench         Print latency histogram at end\n"
+              << "  --cpu-ghz F     CPU frequency for latency conversion (default: 3.5)\n";
 }
 
 int main(int argc, char** argv) {
@@ -25,8 +26,9 @@ int main(int argc, char** argv) {
     Symbol   symbol   = 1;
     uint32_t seed     = 42;
     std::string csv_path;
-    int  top_n  = 5;
-    bool bench  = false;
+    int    top_n   = 5;
+    bool   bench   = false;
+    double cpu_ghz = 3.5;
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--events") == 0 && i+1 < argc) n_events = std::stoull(argv[++i]);
@@ -35,6 +37,7 @@ int main(int argc, char** argv) {
         else if (std::strcmp(argv[i], "--csv") == 0 && i+1 < argc) csv_path = argv[++i];
         else if (std::strcmp(argv[i], "--top") == 0 && i+1 < argc) top_n = std::stoi(argv[++i]);
         else if (std::strcmp(argv[i], "--bench") == 0) bench = true;
+        else if (std::strcmp(argv[i], "--cpu-ghz") == 0 && i+1 < argc) cpu_ghz = std::stod(argv[++i]);
         else if (std::strcmp(argv[i], "--help") == 0) { print_usage(argv[0]); return 0; }
     }
 
@@ -114,7 +117,7 @@ int main(int argc, char** argv) {
 
     if (bench) {
         std::cout << "\n";
-        hist.print_report(std::cout, 3.5);
+        hist.print_report(std::cout, cpu_ghz);
     }
 
     return 0;

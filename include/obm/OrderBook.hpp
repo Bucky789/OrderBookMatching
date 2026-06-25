@@ -1,23 +1,25 @@
 #pragma once
 
+#include "FlatMap.hpp"
 #include "Order.hpp"
 #include "PriceLevel.hpp"
 #include "MemoryPool.hpp"
 #include <functional>
-#include <map>
+#include <string_view>
 #include <unordered_map>
-#include <vector>
 
 namespace obm {
 
 class OrderBook {
 public:
-    // Bids descending (highest first), asks ascending (lowest first)
-    using BidMap = std::map<Price, PriceLevel, std::greater<Price>>;
-    using AskMap = std::map<Price, PriceLevel, std::less<Price>>;
+    // Bids descending (highest first), asks ascending (lowest first).
+    // FlatMap beats std::map on cache behavior at typical book depths.
+    using BidMap = FlatMap<Price, PriceLevel, std::greater<Price>>;
+    using AskMap = FlatMap<Price, PriceLevel, std::less<Price>>;
 
-    // Callback type for fill notifications
-    using FillCallback = std::function<void(const Fill&)>;
+    // Callback types for fill and reject notifications
+    using FillCallback   = std::function<void(const Fill&)>;
+    using RejectCallback = std::function<void(OrderId, std::string_view)>;
 
     explicit OrderBook(Symbol symbol, MemoryPool<Order>& pool);
 
@@ -44,7 +46,8 @@ public:
     [[nodiscard]] Price    last_trade()    const noexcept { return last_trade_price_; }
     [[nodiscard]] bool     is_consistent() const noexcept;
 
-    void set_fill_callback(FillCallback cb) { fill_cb_ = std::move(cb); }
+    void set_fill_callback(FillCallback cb)     { fill_cb_   = std::move(cb); }
+    void set_reject_callback(RejectCallback cb) { reject_cb_ = std::move(cb); }
 
     void print_top(int n, std::ostream& os) const;
 
@@ -55,13 +58,15 @@ private:
     AskMap             asks_;
     // O(1) cancel: OrderId → raw pointer into pool
     std::unordered_map<OrderId, Order*> order_map_;
-    // Stop orders: price → orders waiting for trigger
-    std::map<Price, std::vector<Order*>> stop_buy_;   // trigger when price rises >= stop_price
-    std::map<Price, std::vector<Order*>> stop_sell_;  // trigger when price falls <= stop_price
+    // Stop orders: price → head of intrusive singly-linked list via pool_next.
+    // Zero heap allocation — reuses pool_next pointer in each live Order.
+    FlatMap<Price, Order*> stop_buy_;   // trigger when price rises >= stop_price
+    FlatMap<Price, Order*> stop_sell_;  // trigger when price falls <= stop_price
 
-    uint64_t     sequence_      = 0;
-    Price        last_trade_price_ = INVALID_PRICE;
-    FillCallback fill_cb_;
+    uint64_t       sequence_          = 0;
+    Price          last_trade_price_  = INVALID_PRICE;
+    FillCallback   fill_cb_;
+    RejectCallback reject_cb_;
 
     // ── Internal matching ─────────────────────────────────────────────────────
     void match_limit(Order* aggressor);

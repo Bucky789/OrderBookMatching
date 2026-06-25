@@ -148,6 +148,10 @@ bool FIXParser::parse(const char* buf, std::size_t len, FIXMessage& out) noexcep
         if (v) out.order_id = fast_atoi(v, vlen);
     }
 
+    // Tag 112: TestReqID (used in TestRequest/Heartbeat)
+    v = find_tag(buf, len, 112, vlen);
+    if (v) safe_copy(out.test_req_id, sizeof(out.test_req_id), v, vlen);
+
     out.valid = true;
     return true;
 }

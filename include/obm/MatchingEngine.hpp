@@ -6,15 +6,23 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
+#include <vector>
 
 namespace obm {
 
+// Multi-symbol partitioned matching engine.
+//
+// Gateway thread calls submit(ev); events are routed to partition[symbol % N].
+// Each partition owns one SPSC ring, one memory pool, and one worker thread.
+// No cross-partition synchronization on the hot path — mechanical sympathy.
 class MatchingEngine {
 public:
     struct Config {
         std::size_t pool_initial_slabs = 4;
+        std::size_t n_partitions       = 4;   // one ring + thread per partition
         bool        enable_logging     = false;
     };
 
@@ -36,17 +44,18 @@ public:
     MatchingEngine& operator=(const MatchingEngine&) = delete;
 
     // ── Gateway thread API ────────────────────────────────────────────────────
-    // Non-blocking push to the SPSC ring buffer. Returns false if ring full.
+    // Route event to partition[ev.symbol % n_partitions]. Non-blocking.
     [[nodiscard]] bool submit(const OrderEvent& ev) noexcept;
 
     // ── Engine thread API ─────────────────────────────────────────────────────
-    // Blocks until shutdown event received. Run on a dedicated thread.
+    // Launch all partition threads; block until all stop.
+    // A SHUTDOWN event sent to ANY partition stops ALL partitions after draining.
     void run();
 
-    // Process at most one batch from the ring buffer (non-blocking). For tests.
+    // Drain all partition rings once without spawning threads. For tests.
     void run_once();
 
-    // Submit a SHUTDOWN event and wait for run() to return.
+    // Set stop flag and join all running workers.
     void shutdown();
 
     // ── Callbacks (register before calling run/run_once) ─────────────────────
@@ -56,25 +65,38 @@ public:
     // ── Stats ─────────────────────────────────────────────────────────────────
     [[nodiscard]] Stats stats() const noexcept;
 
-    // ── Direct book access (for testing) ─────────────────────────────────────
+    // ── Direct book access (for testing / inspection) ─────────────────────────
     [[nodiscard]] OrderBook* book_for(Symbol sym);
-    [[nodiscard]] const std::unordered_map<Symbol, OrderBook>& books() const { return books_; }
+    [[nodiscard]] const std::unordered_map<Symbol, OrderBook>*
+    books_for_partition(std::size_t idx) const noexcept;
 
 private:
-    Config cfg_;
-    MemoryPool<Order>  pool_;
-    // Ring buffer is 4 MB (65536 × 64 bytes) — heap-allocate to avoid stack overflow.
-    std::unique_ptr<OrderRingBuffer> ring_;
-    std::unordered_map<Symbol, OrderBook> books_;
+    struct Partition {
+        MemoryPool<Order>                     pool;
+        std::unique_ptr<OrderRingBuffer>      ring;
+        std::unordered_map<Symbol, OrderBook> books;
+        Stats                                 stats{};
 
-    FillCallback   fill_cb_;
-    RejectCallback reject_cb_;
+        explicit Partition(std::size_t slabs)
+            : pool(slabs), ring(std::make_unique<OrderRingBuffer>()) {}
 
-    std::atomic<bool> running_{false};
-    Stats stats_;
+        Partition(const Partition&)            = delete;
+        Partition& operator=(const Partition&) = delete;
+        Partition(Partition&&)                 = delete;
+        Partition& operator=(Partition&&)      = delete;
+    };
 
-    void process_event(const OrderEvent& ev);
-    OrderBook& get_or_create_book(Symbol sym);
+    Config                                  cfg_;
+    std::vector<std::unique_ptr<Partition>> partitions_;
+    std::vector<std::thread>                workers_;
+    FillCallback                            fill_cb_;
+    RejectCallback                          reject_cb_;
+    std::atomic<bool>                       stop_flag_{false};
+
+    Partition&  partition_for(Symbol sym) noexcept;
+    void        run_partition(Partition& p);
+    void        process_event(Partition& p, const OrderEvent& ev);
+    OrderBook&  get_or_create_book(Partition& p, Symbol sym);
 };
 
 } // namespace obm

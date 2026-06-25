@@ -34,13 +34,19 @@ add_library(obm_core STATIC
     src/PriceLevel.cpp
     src/OrderBook.cpp
     src/MatchingEngine.cpp
+    src/RiskEngine.cpp
+    src/AuctionCross.cpp
     src/FIXParser.cpp
     src/FIXEncoder.cpp
+    src/FIXSession.cpp
     src/MarketDataSimulator.cpp
     src/TickDataReplayer.cpp
 )
 target_include_directories(obm_core PUBLIC include)
 target_link_libraries(obm_core PUBLIC spdlog::spdlog)
+if(WIN32)
+    target_link_libraries(obm_core PUBLIC Ws2_32)
+endif()
 
 # ── Simulation executable ─────────────────────────────────────────────────────
 add_executable(obm_sim src/main.cpp)
@@ -52,3 +58,11 @@ add_subdirectory(tests)
 
 # ── Benchmarks ────────────────────────────────────────────────────────────────
 add_subdirectory(benchmarks)
+
+# ── Python bindings ───────────────────────────────────────────────────────────
+find_package(Python COMPONENTS Interpreter Development QUIET)
+if(Python_FOUND)
+    add_subdirectory(python)
+else()
+    message(STATUS "Python not found — skipping pybind11 bindings")
+endif()

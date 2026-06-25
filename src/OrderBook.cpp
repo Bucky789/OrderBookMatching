@@ -74,20 +74,24 @@ void OrderBook::add_order(const OrderEvent& ev) {
     Order* o = make_order(ev);
 
     switch (o->type) {
-    case OrderType::STOP:
-        // Register trigger — do not match now
-        if (o->side == Side::BUY)
-            stop_buy_[o->stop_price].push_back(o);
-        else
-            stop_sell_[o->stop_price].push_back(o);
+    case OrderType::STOP: {
+        // Register trigger — do not match now.
+        // Prepend to intrusive list via pool_next (safe: allocated orders
+        // don't use pool_next for the freelist until they are deallocated).
+        auto& stop_map = (o->side == Side::BUY) ? stop_buy_ : stop_sell_;
+        Order*& head = stop_map[o->stop_price];
+        o->pool_next = head;
+        head = o;
         order_map_[o->id] = o;
         return;
+    }
 
     case OrderType::FOK: {
         // Pre-check: if we can't fill the full qty, reject without touching book
         Quantity avail = available_qty(o);
         if (avail < o->original_qty) {
             o->state = OrderState::REJECTED;
+            if (reject_cb_) reject_cb_(o->id, "FOK: insufficient liquidity");
             pool_.deallocate(o);
             return;
         }
@@ -335,17 +339,25 @@ void OrderBook::execute_fill(Order* agg, Order* pas, Quantity qty) {
 void OrderBook::trigger_stops() {
     if (last_trade_price_ == INVALID_PRICE) return;
 
+    auto drain_list = [&](Order* head) {
+        while (head) {
+            Order* nxt = head->pool_next;
+            head->pool_next = nullptr;
+            head->type = OrderType::MARKET;
+            match_market(head);
+            if (head->remaining_qty > 0) head->state = OrderState::CANCELLED;
+            order_map_.erase(head->id);
+            pool_.deallocate(head);
+            head = nxt;
+        }
+    };
+
     // Buy stops: trigger when market price reaches or exceeds stop_price
     for (auto it = stop_buy_.begin(); it != stop_buy_.end(); ) {
         if (last_trade_price_ >= it->first) {
-            for (Order* o : it->second) {
-                o->type = OrderType::MARKET;
-                match_market(o);
-                if (o->remaining_qty > 0) o->state = OrderState::CANCELLED;
-                order_map_.erase(o->id);
-                pool_.deallocate(o);
-            }
+            Order* head = it->second;
             it = stop_buy_.erase(it);
+            drain_list(head);
         } else {
             ++it;
         }
@@ -354,14 +366,9 @@ void OrderBook::trigger_stops() {
     // Sell stops: trigger when market price falls to or below stop_price
     for (auto it = stop_sell_.begin(); it != stop_sell_.end(); ) {
         if (last_trade_price_ <= it->first) {
-            for (Order* o : it->second) {
-                o->type = OrderType::MARKET;
-                match_market(o);
-                if (o->remaining_qty > 0) o->state = OrderState::CANCELLED;
-                order_map_.erase(o->id);
-                pool_.deallocate(o);
-            }
+            Order* head = it->second;
             it = stop_sell_.erase(it);
+            drain_list(head);
         } else {
             ++it;
         }
@@ -375,15 +382,15 @@ bool OrderBook::cancel_order(OrderId id) {
     Order* o = it->second;
     order_map_.erase(it);
 
-    // Check stop lists first
+    // Check stop lists first (intrusive singly-linked list via pool_next)
     auto try_erase_stop = [&](auto& stop_map) -> bool {
         auto sit = stop_map.find(o->stop_price);
         if (sit == stop_map.end()) return false;
-        auto& vec = sit->second;
-        auto vit = std::find(vec.begin(), vec.end(), o);
-        if (vit == vec.end()) return false;
-        vec.erase(vit);
-        if (vec.empty()) stop_map.erase(sit);
+        Order** cur = &sit->second;
+        while (*cur && *cur != o) cur = &(*cur)->pool_next;
+        if (!*cur) return false;
+        *cur = o->pool_next;
+        if (sit->second == nullptr) stop_map.erase(sit);
         return true;
     };
 

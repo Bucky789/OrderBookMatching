@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cmath>
 #include <cstdint>
 #include <limits>
 
@@ -17,7 +18,7 @@ static constexpr Price   INVALID_PRICE = std::numeric_limits<Price>::min();
 static constexpr int     CACHE_LINE    = 64;
 static constexpr int64_t PRICE_SCALE   = 100'000'000LL; // 10^8
 
-inline Price  double_to_price(double d)  noexcept { return static_cast<Price>(d * PRICE_SCALE + 0.5); }
+inline Price  double_to_price(double d)  noexcept { return static_cast<Price>(std::llround(d * PRICE_SCALE)); }
 inline double price_to_double(Price p)   noexcept { return static_cast<double>(p) / static_cast<double>(PRICE_SCALE); }
 
 // ── Enumerations ─────────────────────────────────────────────────────────────
